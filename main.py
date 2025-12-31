@@ -316,114 +316,106 @@ async def transfer_money(request: TransferRequest, user=Depends(verify_token)):
         if sender_balance < request.amount:
             raise HTTPException(status_code=400, detail="Insufficient balance")
         
-        # Check transaction through Action Blocker Service (HTTP)
+        # Action Blocker acts as adapter - decides auto-approve or flag for review
+        # All transaction processing goes through Action Blocker
         action_blocker_url = os.getenv("ACTION_BLOCKER_URL", "http://127.0.0.1:8001")
-        needs_approval = False
-        violations = []
+        action_blocker_url_clean = action_blocker_url.rstrip('/')
         
         try:
-            # Call Action Blocker Service to check transaction
-            # Remove trailing slash from URL to avoid redirects
-            action_blocker_url_clean = action_blocker_url.rstrip('/')
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                check_response = await client.post(
-                    f"{action_blocker_url_clean}/api/check-transaction",
+            # Call Action Blocker to process transaction
+            # Action Blocker will:
+            # - Check rules
+            # - If no violations → Auto-approve and execute immediately
+            # - If violations → Flag for admin review
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                process_response = await client.post(
+                    f"{action_blocker_url_clean}/api/process-transaction",
                     json={
                         "from_user_id": user.id,
                         "to_user_id": recipient_user_id,
                         "amount": request.amount,
                         "sender_balance": sender_balance
                     },
-                    timeout=5.0
+                    timeout=30.0
                 )
                 
-                if check_response.status_code == 200:
-                    check_data = check_response.json()
-                    needs_approval = check_data.get("needs_approval", False)
-                    violations = check_data.get("violations", [])
-                elif check_response.status_code == 503:
-                    # Service not running - block transaction for safety
-                    needs_approval = True
-                    violations = ["Action Blocker Service is not running. Transaction blocked for safety."]
-                    print("⚠️  Action Blocker Service not available - blocking transaction")
+                if process_response.status_code == 200:
+                    result = process_response.json()
+                    print(f"✅ Action Blocker processed transaction: {result.get('status')}")
+                    return result
                 else:
-                    # Error from service - block transaction for safety
-                    needs_approval = True
-                    violations = [f"Action Blocker Service error: {check_response.status_code}"]
-                    print(f"⚠️  Action Blocker Service error: {check_response.status_code}")
+                    error_msg = process_response.text
+                    print(f"❌ Action Blocker error: {process_response.status_code} - {error_msg}")
+                    raise HTTPException(
+                        status_code=process_response.status_code,
+                        detail=f"Action Blocker Service error: {error_msg}"
+                    )
+                    
         except httpx.TimeoutException:
-            # Timeout - block transaction for safety
-            needs_approval = True
-            violations = ["Action Blocker Service timeout. Transaction blocked for safety."]
-            print("⚠️  Action Blocker Service timeout - blocking transaction")
-        except httpx.ConnectError:
-            # Service not reachable - block transaction for safety
-            needs_approval = True
-            violations = ["Action Blocker Service is not reachable. Transaction blocked for safety."]
-            print("⚠️  Action Blocker Service not reachable - blocking transaction")
-        except Exception as e:
-            # Any other error - block transaction for safety
-            needs_approval = True
-            violations = [f"Error checking transaction: {str(e)}"]
-            print(f"⚠️  Error calling Action Blocker Service: {e}")
-        
-        if needs_approval:
-            # Create pending transaction instead of executing
+            error_msg = "Action Blocker Service timeout - transaction blocked for safety"
+            print(f"❌ {error_msg}")
+            # Block transaction for safety when service is down
             try:
                 pending_tx = supabase.table("pending_transactions").insert({
                     "from_user_id": user.id,
                     "to_user_id": recipient_user_id,
                     "amount": request.amount,
                     "status": "pending",
-                    "violations": json.dumps(violations)
+                    "violations": json.dumps(["Action Blocker Service timeout - blocked for safety"])
                 }).execute()
-                
                 return {
-                    "message": "Transaction flagged for review",
+                    "message": "Transaction blocked - Action Blocker Service timeout",
                     "status": "pending",
                     "pending_transaction_id": pending_tx.data[0]["id"],
-                    "violations": violations,
+                    "violations": ["Action Blocker Service timeout - blocked for safety"],
                     "requires_approval": True
                 }
-            except Exception as e:
-                print(f"Error creating pending transaction: {e}")
-                # If pending_transactions table doesn't exist, proceed with normal transaction
-                # (graceful degradation)
-                pass
-        
-        # Transaction passed all rules, proceed with execution
-        # Get recipient's wallet
-        recipient_wallet = supabase.table("wallets").select("balance").eq("user_id", recipient_user_id).execute()
-        if not recipient_wallet.data:
-            # Create wallet if it doesn't exist
-            supabase.table("wallets").insert({
-                "user_id": recipient_user_id,
-                "balance": 1000.0
-            }).execute()
-            recipient_balance = 1000.0
-        else:
-            recipient_balance = recipient_wallet.data[0]["balance"]
-        
-        # Update balances
-        new_sender_balance = sender_balance - request.amount
-        new_recipient_balance = recipient_balance + request.amount
-        
-        supabase.table("wallets").update({"balance": new_sender_balance}).eq("user_id", user.id).execute()
-        supabase.table("wallets").update({"balance": new_recipient_balance}).eq("user_id", recipient_user_id).execute()
-        
-        # Create transaction record
-        transaction = supabase.table("transactions").insert({
-            "from_user_id": user.id,
-            "to_user_id": recipient_user_id,
-            "amount": request.amount
-        }).execute()
-        
-        return {
-            "message": "Transfer successful",
-            "transaction_id": transaction.data[0]["id"],
-            "new_balance": new_sender_balance,
-            "requires_approval": False
-        }
+            except:
+                raise HTTPException(status_code=503, detail=error_msg)
+        except httpx.ConnectError:
+            error_msg = "Action Blocker Service is not reachable - transaction blocked for safety"
+            print(f"❌ {error_msg}")
+            # Block transaction for safety when service is down
+            try:
+                pending_tx = supabase.table("pending_transactions").insert({
+                    "from_user_id": user.id,
+                    "to_user_id": recipient_user_id,
+                    "amount": request.amount,
+                    "status": "pending",
+                    "violations": json.dumps(["Action Blocker Service not reachable - blocked for safety"])
+                }).execute()
+                return {
+                    "message": "Transaction blocked - Action Blocker Service not reachable",
+                    "status": "pending",
+                    "pending_transaction_id": pending_tx.data[0]["id"],
+                    "violations": ["Action Blocker Service not reachable - blocked for safety"],
+                    "requires_approval": True
+                }
+            except:
+                raise HTTPException(status_code=503, detail=error_msg)
+        except HTTPException:
+            raise
+        except Exception as e:
+            error_msg = f"Error calling Action Blocker Service: {str(e)}"
+            print(f"❌ {error_msg}")
+            # Block transaction for safety on any error
+            try:
+                pending_tx = supabase.table("pending_transactions").insert({
+                    "from_user_id": user.id,
+                    "to_user_id": recipient_user_id,
+                    "amount": request.amount,
+                    "status": "pending",
+                    "violations": json.dumps([f"Action Blocker Service error: {str(e)}"])
+                }).execute()
+                return {
+                    "message": "Transaction blocked - Action Blocker Service error",
+                    "status": "pending",
+                    "pending_transaction_id": pending_tx.data[0]["id"],
+                    "violations": [f"Action Blocker Service error: {str(e)}"],
+                    "requires_approval": True
+                }
+            except:
+                raise HTTPException(status_code=500, detail=error_msg)
     except HTTPException:
         raise
     except Exception as e:
