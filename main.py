@@ -82,6 +82,23 @@ def get_user_by_id(user_id: str):
 
 
 # Pydantic models
+class SignUpRequest(BaseModel):
+    email: EmailStr
+    password: str
+    full_name: Optional[str] = None
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    user: Dict[str, Any]
+    expires_in: int = 3600
+
+
 class TransferRequest(BaseModel):
     recipient_email: EmailStr
     amount: float
@@ -176,6 +193,93 @@ def read_root():
     return {
         "message": "Digital Wallet API",
         "backend_url": BACK_URL
+    }
+
+
+@app.post("/api/auth/signup", response_model=AuthResponse)
+async def signup(request: SignUpRequest):
+    """Sign up a new user"""
+    try:
+        # Create user in Supabase Auth
+        auth_response = supabase.auth.admin.create_user({
+            "email": request.email,
+            "password": request.password,
+            "email_confirm": True,  # Auto-confirm email
+            "user_metadata": {
+                "full_name": request.full_name or ""
+            }
+        })
+        
+        if not auth_response.user:
+            raise HTTPException(status_code=400, detail="Failed to create user")
+        
+        # Get the session token
+        sign_in_response = supabase.auth.sign_in_with_password({
+            "email": request.email,
+            "password": request.password
+        })
+        
+        if not sign_in_response.session:
+            raise HTTPException(status_code=400, detail="Failed to create session")
+        
+        return {
+            "access_token": sign_in_response.session.access_token,
+            "user": {
+                "id": auth_response.user.id,
+                "email": auth_response.user.email,
+                "full_name": request.full_name
+            },
+            "expires_in": sign_in_response.session.expires_in
+        }
+    except Exception as e:
+        error_msg = str(e)
+        if "already registered" in error_msg.lower() or "already exists" in error_msg.lower():
+            raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(status_code=400, detail=f"Signup failed: {error_msg}")
+
+
+@app.post("/api/auth/login", response_model=AuthResponse)
+async def login(request: LoginRequest):
+    """Login user"""
+    try:
+        # Sign in with Supabase
+        sign_in_response = supabase.auth.sign_in_with_password({
+            "email": request.email,
+            "password": request.password
+        })
+        
+        if not sign_in_response.session:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+        user_data = sign_in_response.user
+        user_profile = get_user_by_id(user_data.id)
+        
+        return {
+            "access_token": sign_in_response.session.access_token,
+            "user": {
+                "id": user_data.id,
+                "email": user_data.email,
+                "full_name": user_profile.get("full_name") if user_profile else None
+            },
+            "expires_in": sign_in_response.session.expires_in
+        }
+    except Exception as e:
+        error_msg = str(e)
+        if "invalid" in error_msg.lower() or "wrong" in error_msg.lower():
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise HTTPException(status_code=401, detail=f"Login failed: {error_msg}")
+
+
+@app.get("/api/auth/session")
+async def get_session(user=Depends(verify_token)):
+    """Get current session/user info"""
+    user_profile = get_user_by_id(user.id)
+    return {
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user_profile.get("full_name") if user_profile else None
+        }
     }
 
 
