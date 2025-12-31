@@ -680,142 +680,51 @@ async def approve_transaction(request: ApproveTransactionRequest, user=Depends(v
         
         print(f"🔄 Processing {'approval' if request.approve else 'rejection'} for transaction {request.transaction_id}")
         
-        # Update pending transaction status FIRST (before execution)
-        update_data = {
-            "status": "approved" if request.approve else "rejected",
-            "reviewed_at": datetime.utcnow().isoformat(),
-            "reviewed_by": user.id
-        }
+        # All approval/rejection decisions go through Action Blocker Service
+        # Action Blocker is the central authority for all approval decisions
+        action_blocker_url = os.getenv("ACTION_BLOCKER_URL", "http://127.0.0.1:8001")
+        action_blocker_url_clean = action_blocker_url.rstrip('/')
         
-        supabase.table("pending_transactions").update(update_data).eq(
-            "id", request.transaction_id
-        ).execute()
-        
-        print(f"✅ Transaction status updated to: {update_data['status']}")
-        
-        # If approved, check through Action Blocker Service before executing
-        if request.approve:
-            from_user_id = pending_tx["from_user_id"]
-            to_user_id = pending_tx["to_user_id"]
-            amount = float(pending_tx["amount"])
-            
-            # Get sender's wallet
-            sender_wallet = supabase.table("wallets").select("balance").eq("user_id", from_user_id).execute()
-            sender_balance = sender_wallet.data[0]["balance"] if sender_wallet.data else 1000.0
-            
-            # Check transaction through Action Blocker Service before executing
-            action_blocker_url = os.getenv("ACTION_BLOCKER_URL", "http://127.0.0.1:8001")
-            blocker_approved = False
-            violations = []
-            
-            try:
-                # Call Action Blocker Service to check transaction
-                # Remove trailing slash from URL to avoid redirects
-                action_blocker_url_clean = action_blocker_url.rstrip('/')
-                async with httpx.AsyncClient(follow_redirects=True) as client:
-                    check_response = await client.post(
-                        f"{action_blocker_url_clean}/api/check-transaction",
-                        json={
-                            "from_user_id": from_user_id,
-                            "to_user_id": to_user_id,
-                            "amount": amount,
-                            "sender_balance": sender_balance
-                        },
-                        timeout=5.0
+        try:
+            # Call Action Blocker Service to handle approval/rejection
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                approve_response = await client.post(
+                    f"{action_blocker_url_clean}/api/approve-transaction",
+                    json={
+                        "transaction_id": request.transaction_id,
+                        "approve": request.approve,
+                        "reviewed_by": user.id,
+                        "review_notes": None
+                    },
+                    timeout=30.0
+                )
+                
+                if approve_response.status_code == 200:
+                    result = approve_response.json()
+                    print(f"✅ Action Blocker processed approval: {result.get('status')}")
+                    return result
+                else:
+                    error_msg = approve_response.text
+                    print(f"❌ Action Blocker error: {approve_response.status_code} - {error_msg}")
+                    raise HTTPException(
+                        status_code=approve_response.status_code,
+                        detail=f"Action Blocker Service error: {error_msg}"
                     )
                     
-                    if check_response.status_code == 200:
-                        check_data = check_response.json()
-                        # Admin is explicitly approving - allow override even if rules are violated
-                        # The transaction was already flagged, admin reviewed it and decided to approve
-                        blocker_approved = True  # Always allow admin override
-                        violations = check_data.get("violations", [])
-                        if violations:
-                            print(f"⚠️  Action Blocker reports violations, but admin override allowed: {violations}")
-                    else:
-                        # Service error - allow approval since admin is explicitly approving
-                        blocker_approved = True  # Allow admin override
-                        violations = [f"Action Blocker Service error: {check_response.status_code} - approval allowed"]
-                        print(f"⚠️  Action Blocker Service error during approval: {check_response.status_code} - allowing approval")
-            except httpx.TimeoutException:
-                # Action blocker timeout - allow approval since transaction was already flagged
-                # Admin can still approve if they want (transaction is already in database)
-                blocker_approved = True  # Allow approval when service is down
-                violations = ["Action Blocker Service timeout during approval - approval allowed"]
-                print("⚠️  Action Blocker Service timeout during approval - allowing approval")
-            except httpx.ConnectError:
-                # Action blocker not reachable - allow approval since transaction was already flagged
-                # Admin can still approve if they want (transaction is already in database)
-                blocker_approved = True  # Allow approval when service is down
-                violations = ["Action Blocker Service is not reachable during approval - approval allowed"]
-                print("⚠️  Action Blocker Service not reachable during approval - allowing approval")
-            except Exception as e:
-                # Other errors - allow approval for safety (transaction already flagged and stored)
-                blocker_approved = True  # Allow approval when service has errors
-                violations = [f"Error checking transaction during approval: {str(e)} - approval allowed"]
-                print(f"⚠️  Error calling Action Blocker Service during approval: {e} - allowing approval")
-            
-            # Only execute if blocker approves (or if service is down - allow admin override)
-            if not blocker_approved:
-                # Update status back to pending with new violations
-                supabase.table("pending_transactions").update({
-                    "status": "pending",
-                    "violations": json.dumps(violations)
-                }).eq("id", request.transaction_id).execute()
-                
-                return {
-                    "message": "Transaction still violates rules. Cannot approve.",
-                    "status": "blocked",
-                    "violations": violations
-                }
-            
-            # Blocker approved - proceed with execution
-            print(f"✅ Admin approved transaction {request.transaction_id}, proceeding with execution...")
-            
-            # Get recipient's wallet
-            recipient_wallet = supabase.table("wallets").select("balance").eq("user_id", to_user_id).execute()
-            recipient_balance = recipient_wallet.data[0]["balance"] if recipient_wallet.data else 1000.0
-            
-            # Check if sender has sufficient balance
-            if sender_balance < amount:
-                print(f"❌ Insufficient balance: {sender_balance} < {amount}")
-                # Update status back to pending
-                supabase.table("pending_transactions").update({
-                    "status": "pending",
-                    "violations": json.dumps(["Insufficient balance"])
-                }).eq("id", request.transaction_id).execute()
-                raise HTTPException(status_code=400, detail=f"Insufficient balance: ${sender_balance:.2f} < ${amount:.2f}")
-            
-            # Update balances
-            new_sender_balance = sender_balance - amount
-            new_recipient_balance = recipient_balance + amount
-            
-            print(f"💰 Updating balances: Sender {from_user_id[:8]}... ${sender_balance:.2f} -> ${new_sender_balance:.2f}")
-            print(f"💰 Updating balances: Recipient {to_user_id[:8]}... ${recipient_balance:.2f} -> ${new_recipient_balance:.2f}")
-            
-            supabase.table("wallets").update({"balance": new_sender_balance}).eq("user_id", from_user_id).execute()
-            supabase.table("wallets").update({"balance": new_recipient_balance}).eq("user_id", to_user_id).execute()
-            
-            # Create transaction record
-            print(f"📝 Creating transaction record...")
-            transaction = supabase.table("transactions").insert({
-                "from_user_id": from_user_id,
-                "to_user_id": to_user_id,
-                "amount": amount
-            }).execute()
-            
-            print(f"✅ Transaction {request.transaction_id} approved and executed successfully!")
-            
-            return {
-                "message": "Transaction approved and executed",
-                "transaction_id": transaction.data[0]["id"],
-                "status": "approved"
-            }
-        else:
-            return {
-                "message": "Transaction rejected",
-                "status": "rejected"
-            }
+        except httpx.TimeoutException:
+            error_msg = "Action Blocker Service timeout - cannot process approval"
+            print(f"❌ {error_msg}")
+            raise HTTPException(status_code=503, detail=error_msg)
+        except httpx.ConnectError:
+            error_msg = "Action Blocker Service is not reachable - cannot process approval"
+            print(f"❌ {error_msg}")
+            raise HTTPException(status_code=503, detail=error_msg)
+        except HTTPException:
+            raise
+        except Exception as e:
+            error_msg = f"Error calling Action Blocker Service: {str(e)}"
+            print(f"❌ {error_msg}")
+            raise HTTPException(status_code=500, detail=error_msg)
     except HTTPException:
         raise
     except Exception as e:
