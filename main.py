@@ -1,5 +1,7 @@
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List, Dict, Any
 from supabase import create_client, Client
@@ -13,6 +15,20 @@ import json
 load_dotenv()
 
 app = FastAPI(title="Digital Wallet API")
+
+# Add validation error handler
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    print(f"Validation error: {exc.errors()}")
+    try:
+        body = await request.body()
+        print(f"Request body: {body.decode()}")
+    except:
+        pass
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()}
+    )
 
 # CORS middleware
 # Get allowed origins from environment or use defaults
@@ -242,10 +258,11 @@ async def signup(request: SignUpRequest):
 async def login(request: LoginRequest):
     """Login user"""
     try:
+        print(f"Login attempt for email: {request.email}")
         # Sign in with Supabase
         sign_in_response = supabase.auth.sign_in_with_password({
-            "email": request.email,
-            "password": request.password
+            "email": str(request.email),
+            "password": str(request.password)
         })
         
         if not sign_in_response.session:
