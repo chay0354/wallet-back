@@ -10,10 +10,6 @@ from datetime import datetime
 import httpx
 import json
 
-# Add action-blocker to path for rules engine
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'action-blocker'))
-from rules_engine import RulesEngine
-
 load_dotenv()
 
 app = FastAPI(title="Digital Wallet API")
@@ -40,9 +36,6 @@ if not supabase_service_key:
     raise ValueError("SUPABASE_SERVICE_ROLE_KEY environment variable is not set. Please check your .env file.")
 
 supabase: Client = create_client(supabase_url, supabase_service_key)
-
-# Initialize rules engine
-rules_engine = RulesEngine(supabase)
 
 # Helper function to get user by email from users table
 def get_user_by_email(email: str):
@@ -734,7 +727,9 @@ async def get_rules(user=Depends(verify_token)):
         raise HTTPException(status_code=403, detail="Admin access required")
     
     try:
-        rules = rules_engine.get_rules()
+        # Query rules directly from database
+        rules_result = supabase.table("transaction_rules").select("*").execute()
+        rules = rules_result.data if rules_result.data else []
         return {"rules": rules}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching rules: {str(e)}")
@@ -782,8 +777,8 @@ async def update_rule(request: UpdateRuleRequest, user=Depends(verify_token)):
             "rule_id", request.rule_id
         ).execute()
         
-        # Reload rules engine to pick up changes
-        rules_engine.reload_rules()
+        # Note: Action Blocker Service will reload rules on its own when needed
+        # No need to reload here since we delegate all rule checking to action-blocker
         
         return {"message": "Rule updated successfully", "rule_id": request.rule_id}
     except HTTPException:
