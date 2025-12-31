@@ -37,6 +37,12 @@ if not supabase_service_key:
 
 supabase: Client = create_client(supabase_url, supabase_service_key)
 
+# Backend URL configuration - read from environment variable
+BACK_URL = os.getenv("back_url", "").rstrip('/')
+if not BACK_URL:
+    # Fallback to localhost for development if not set
+    BACK_URL = "http://localhost:8000"
+
 # Helper function to get user by email from users table
 def get_user_by_email(email: str):
     """Get user by email from users table"""
@@ -160,7 +166,10 @@ async def verify_token(authorization: str = Header(None)):
 
 @app.get("/")
 def read_root():
-    return {"message": "Digital Wallet API"}
+    return {
+        "message": "Digital Wallet API",
+        "backend_url": BACK_URL
+    }
 
 
 @app.get("/api/balance", response_model=BalanceResponse)
