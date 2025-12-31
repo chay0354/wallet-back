@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, List, Dict, Any
 from supabase import create_client, Client
 import os
@@ -99,14 +99,40 @@ def get_user_by_id(user_id: str):
 
 # Pydantic models
 class SignUpRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str
     full_name: Optional[str] = None
+    
+    @field_validator('email')
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        # Allow admin@admin as special case
+        if v == 'admin@admin':
+            return v
+        # Otherwise validate as normal email format
+        import re
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, v):
+            raise ValueError('Invalid email address')
+        return v
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str
+    
+    @field_validator('email')
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        # Allow admin@admin as special case
+        if v == 'admin@admin':
+            return v
+        # Otherwise validate as normal email format
+        import re
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, v):
+            raise ValueError('Invalid email address')
+        return v
 
 
 class AuthResponse(BaseModel):
