@@ -37,10 +37,18 @@ if not supabase_service_key:
 
 supabase: Client = create_client(supabase_url, supabase_service_key)
 
-# Backend URL configuration - read from environment variable (required)
+# Backend URL configuration - read from environment variable
+# Priority: 1. back_url env var, 2. Vercel auto-detection, 3. localhost for dev
 BACK_URL = os.getenv("back_url", "").rstrip('/')
 if not BACK_URL:
-    raise ValueError("back_url environment variable is not set. Please set back_url in your environment variables.")
+    # Try Vercel's automatic URL detection
+    vercel_url = os.getenv("VERCEL_URL", "")
+    if vercel_url:
+        # Vercel provides URL without protocol, add https
+        BACK_URL = f"https://{vercel_url}".rstrip('/')
+    else:
+        # Fallback to localhost for local development
+        BACK_URL = "http://localhost:8000"
 
 # Helper function to get user by email from users table
 def get_user_by_email(email: str):
