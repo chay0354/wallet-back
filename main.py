@@ -748,23 +748,41 @@ async def approve_transaction(request: ApproveTransactionRequest, user=Depends(v
                 }
             
             # Blocker approved - proceed with execution
+            print(f"✅ Admin approved transaction {request.transaction_id}, proceeding with execution...")
+            
             # Get recipient's wallet
             recipient_wallet = supabase.table("wallets").select("balance").eq("user_id", to_user_id).execute()
             recipient_balance = recipient_wallet.data[0]["balance"] if recipient_wallet.data else 1000.0
+            
+            # Check if sender has sufficient balance
+            if sender_balance < amount:
+                print(f"❌ Insufficient balance: {sender_balance} < {amount}")
+                # Update status back to pending
+                supabase.table("pending_transactions").update({
+                    "status": "pending",
+                    "violations": json.dumps(["Insufficient balance"])
+                }).eq("id", request.transaction_id).execute()
+                raise HTTPException(status_code=400, detail=f"Insufficient balance: ${sender_balance:.2f} < ${amount:.2f}")
             
             # Update balances
             new_sender_balance = sender_balance - amount
             new_recipient_balance = recipient_balance + amount
             
+            print(f"💰 Updating balances: Sender {from_user_id[:8]}... ${sender_balance:.2f} -> ${new_sender_balance:.2f}")
+            print(f"💰 Updating balances: Recipient {to_user_id[:8]}... ${recipient_balance:.2f} -> ${new_recipient_balance:.2f}")
+            
             supabase.table("wallets").update({"balance": new_sender_balance}).eq("user_id", from_user_id).execute()
             supabase.table("wallets").update({"balance": new_recipient_balance}).eq("user_id", to_user_id).execute()
             
             # Create transaction record
+            print(f"📝 Creating transaction record...")
             transaction = supabase.table("transactions").insert({
                 "from_user_id": from_user_id,
                 "to_user_id": to_user_id,
                 "amount": amount
             }).execute()
+            
+            print(f"✅ Transaction {request.transaction_id} approved and executed successfully!")
             
             return {
                 "message": "Transaction approved and executed",
