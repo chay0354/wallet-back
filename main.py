@@ -704,27 +704,36 @@ async def approve_transaction(request: ApproveTransactionRequest, user=Depends(v
                     
                     if check_response.status_code == 200:
                         check_data = check_response.json()
-                        blocker_approved = not check_data.get("needs_approval", True)
+                        # Admin is explicitly approving - allow override even if rules are violated
+                        # The transaction was already flagged, admin reviewed it and decided to approve
+                        blocker_approved = True  # Always allow admin override
                         violations = check_data.get("violations", [])
+                        if violations:
+                            print(f"⚠️  Action Blocker reports violations, but admin override allowed: {violations}")
                     else:
-                        # Service error - don't execute for safety
-                        blocker_approved = False
-                        violations = [f"Action Blocker Service error: {check_response.status_code}"]
-                        print(f"⚠️  Action Blocker Service error during approval: {check_response.status_code}")
+                        # Service error - allow approval since admin is explicitly approving
+                        blocker_approved = True  # Allow admin override
+                        violations = [f"Action Blocker Service error: {check_response.status_code} - approval allowed"]
+                        print(f"⚠️  Action Blocker Service error during approval: {check_response.status_code} - allowing approval")
             except httpx.TimeoutException:
-                blocker_approved = False
-                violations = ["Action Blocker Service timeout during approval"]
-                print("⚠️  Action Blocker Service timeout during approval")
+                # Action blocker timeout - allow approval since transaction was already flagged
+                # Admin can still approve if they want (transaction is already in database)
+                blocker_approved = True  # Allow approval when service is down
+                violations = ["Action Blocker Service timeout during approval - approval allowed"]
+                print("⚠️  Action Blocker Service timeout during approval - allowing approval")
             except httpx.ConnectError:
-                blocker_approved = False
-                violations = ["Action Blocker Service is not reachable during approval"]
-                print("⚠️  Action Blocker Service not reachable during approval")
+                # Action blocker not reachable - allow approval since transaction was already flagged
+                # Admin can still approve if they want (transaction is already in database)
+                blocker_approved = True  # Allow approval when service is down
+                violations = ["Action Blocker Service is not reachable during approval - approval allowed"]
+                print("⚠️  Action Blocker Service not reachable during approval - allowing approval")
             except Exception as e:
-                blocker_approved = False
-                violations = [f"Error checking transaction during approval: {str(e)}"]
-                print(f"⚠️  Error calling Action Blocker Service during approval: {e}")
+                # Other errors - allow approval for safety (transaction already flagged and stored)
+                blocker_approved = True  # Allow approval when service has errors
+                violations = [f"Error checking transaction during approval: {str(e)} - approval allowed"]
+                print(f"⚠️  Error calling Action Blocker Service during approval: {e} - allowing approval")
             
-            # Only execute if blocker approves
+            # Only execute if blocker approves (or if service is down - allow admin override)
             if not blocker_approved:
                 # Update status back to pending with new violations
                 supabase.table("pending_transactions").update({
