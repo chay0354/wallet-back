@@ -264,12 +264,16 @@ async def signup(request: SignUpRequest):
         if not sign_in_response.session:
             raise HTTPException(status_code=400, detail="Failed to create session")
         
+        # Get user profile to include created_at
+        user_profile = get_user_by_id(auth_response.user.id)
+        
         return {
             "access_token": sign_in_response.session.access_token,
             "user": {
                 "id": auth_response.user.id,
                 "email": auth_response.user.email,
-                "full_name": request.full_name
+                "full_name": request.full_name,
+                "created_at": user_profile.get("created_at") if user_profile else None
             },
             "expires_in": sign_in_response.session.expires_in
         }
@@ -302,7 +306,8 @@ async def login(request: LoginRequest):
             "user": {
                 "id": user_data.id,
                 "email": user_data.email,
-                "full_name": user_profile.get("full_name") if user_profile else None
+                "full_name": user_profile.get("full_name") if user_profile else None,
+                "created_at": user_profile.get("created_at") if user_profile else None
             },
             "expires_in": sign_in_response.session.expires_in
         }
@@ -321,7 +326,8 @@ async def get_session(user=Depends(verify_token)):
         "user": {
             "id": user.id,
             "email": user.email,
-            "full_name": user_profile.get("full_name") if user_profile else None
+            "full_name": user_profile.get("full_name") if user_profile else None,
+            "created_at": user_profile.get("created_at") if user_profile else None
         }
     }
 
