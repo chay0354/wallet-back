@@ -650,17 +650,37 @@ async def approve_transaction(request: ApproveTransactionRequest, user=Depends(v
         raise HTTPException(status_code=403, detail="Admin access required")
     
     try:
-        # Get pending transaction
+        # Get pending transaction - check all statuses to handle edge cases
         pending_result = supabase.table("pending_transactions").select("*").eq(
             "id", request.transaction_id
-        ).eq("status", "pending").execute()
+        ).execute()
         
         if not pending_result.data or len(pending_result.data) == 0:
             raise HTTPException(status_code=404, detail="Pending transaction not found")
         
         pending_tx = pending_result.data[0]
+        current_status = pending_tx.get("status", "pending")
         
-        # Update pending transaction status
+        # If already approved/rejected, don't process again
+        if current_status == "approved" and request.approve:
+            return {
+                "message": "Transaction already approved",
+                "status": "approved",
+                "transaction_id": request.transaction_id
+            }
+        if current_status == "rejected" and not request.approve:
+            return {
+                "message": "Transaction already rejected",
+                "status": "rejected"
+            }
+        
+        # Only process if status is pending
+        if current_status != "pending":
+            raise HTTPException(status_code=400, detail=f"Transaction is already {current_status}, cannot change status")
+        
+        print(f"🔄 Processing {'approval' if request.approve else 'rejection'} for transaction {request.transaction_id}")
+        
+        # Update pending transaction status FIRST (before execution)
         update_data = {
             "status": "approved" if request.approve else "rejected",
             "reviewed_at": datetime.utcnow().isoformat(),
@@ -670,6 +690,8 @@ async def approve_transaction(request: ApproveTransactionRequest, user=Depends(v
         supabase.table("pending_transactions").update(update_data).eq(
             "id", request.transaction_id
         ).execute()
+        
+        print(f"✅ Transaction status updated to: {update_data['status']}")
         
         # If approved, check through Action Blocker Service before executing
         if request.approve:
