@@ -32,13 +32,21 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # CORS middleware
 # Get allowed origins from environment or use defaults
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001").split(",")
+# Include localhost for development and Vercel domains for production
+default_origins = "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001,https://wallet-front-alpha.vercel.app,https://wallet-front-eight.vercel.app"
+env_origins = os.getenv("ALLOWED_ORIGINS", default_origins)
+allowed_origins = [origin.strip() for origin in env_origins.split(",") if origin.strip()]
+
+# Also allow any Vercel preview deployments (wildcard for *.vercel.app)
+# This allows all Vercel preview deployments to work automatically
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",  # Allow all Vercel preview/production domains
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Supabase client
