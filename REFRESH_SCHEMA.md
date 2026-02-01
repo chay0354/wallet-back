@@ -53,3 +53,11 @@ GRANT ALL ON public.transactions TO postgres, anon, authenticated, service_role;
 The schema cache should refresh automatically, but it can take a few minutes.
 
 
+
+
+
+
+
+
+
+

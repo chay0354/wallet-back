@@ -47,3 +47,11 @@ CREATE POLICY "Service role full access" ON public.users
 Restart the backend server and the errors should be resolved.
 
 
+
+
+
+
+
+
+
+

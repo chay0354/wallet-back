@@ -63,3 +63,11 @@ WHERE id NOT IN (SELECT id FROM public.users)
 ON CONFLICT (id) DO NOTHING;
 
 
+
+
+
+
+
+
+
+

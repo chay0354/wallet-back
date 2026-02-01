@@ -60,3 +60,11 @@ The API will be available at `http://localhost:8000`
 Don't forget to run the SQL script from `setup_database.sql` in your Supabase dashboard!
 
 
+
+
+
+
+
+
+
+

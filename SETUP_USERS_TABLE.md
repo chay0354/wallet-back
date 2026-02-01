@@ -93,3 +93,11 @@ Error getting user by ID: {'code': 'PGRST205', 'message': "Could not find the ta
 The error should be gone and your wallet should work properly!
 
 
+
+
+
+
+
+
+
+

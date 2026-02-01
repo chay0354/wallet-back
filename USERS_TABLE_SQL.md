@@ -85,3 +85,11 @@ After running this SQL:
 - The table works alongside your existing `wallets` and `transactions` tables
 
 
+
+
+
+
+
+
+
+
